@@ -43,3 +43,4 @@ disposable_test/
 *.swo
 .DS_Store
 Thumbs.db
+disposable_test_sandbox/
