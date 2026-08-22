@@ -71,6 +71,8 @@ class TestModels:
             file_extension=".txt",
             file_size_bytes=1024,
             is_directory=False,
+            is_canary=True,
+            severity="high",
             process_telemetry=proc,
             metadata={"source": "test"},
         )
@@ -79,17 +81,23 @@ class TestModels:
         assert d["event_type"] == "created"
         assert d["file_extension"] == ".txt"
         assert d["file_size_bytes"] == 1024
+        assert d["is_canary"] is True
+        assert d["severity"] == "high"
         assert d["process_telemetry"]["pid"] == 5678
         assert d["metadata"]["source"] == "test"
 
         json_str = event.to_json()
         parsed = json.loads(json_str)
         assert parsed["file_path"] == "C:\\test_sandbox\\file.txt"
+        assert parsed["is_canary"] is True
+        assert parsed["severity"] == "high"
 
         restored = EventData.from_dict(d)
         assert restored.event_id == event.event_id
         assert restored.event_type == "created"
         assert restored.file_extension == ".txt"
+        assert restored.is_canary is True
+        assert restored.severity == "high"
         assert restored.process_telemetry is not None
         assert restored.process_telemetry.pid == 5678
 

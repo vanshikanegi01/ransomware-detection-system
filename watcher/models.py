@@ -9,6 +9,7 @@ enabling consistent, serialization-ready data models for downstream analysis
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -23,6 +24,7 @@ class EventType(str, Enum):
     DELETED = "deleted"
     MOVED = "moved"
     RENAMED = "renamed"
+    HEARTBEAT = "heartbeat"
     UNKNOWN = "unknown"
 
     @classmethod
@@ -98,6 +100,8 @@ class EventData:
         file_extension: Normalized file extension (e.g., '.docx', '.exe').
         file_size_bytes: File size in bytes (None if deleted or inaccessible).
         is_directory: True if target is a directory, False for files.
+        is_canary: True if event involves a monitored canary/honeypot decoy file.
+        severity: Event severity level ('normal', 'high', 'critical').
         process_telemetry: Optional snapshot of active/associated process.
         metadata: Extensible key-value store for additional defensive context.
     """
@@ -109,6 +113,8 @@ class EventData:
     file_extension: str = ""
     file_size_bytes: Optional[int] = None
     is_directory: bool = False
+    is_canary: bool = False
+    severity: str = "normal"
     process_telemetry: Optional[ProcessTelemetry] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -138,6 +144,69 @@ class EventData:
             file_extension=data.get("file_extension", ""),
             file_size_bytes=data.get("file_size_bytes"),
             is_directory=bool(data.get("is_directory", False)),
+            is_canary=bool(data.get("is_canary", False)),
+            severity=str(data.get("severity", "normal")),
             process_telemetry=proc_obj,
             metadata=data.get("metadata", {}),
         )
+
+
+@dataclass
+class HeartbeatData:
+    """
+    Defensive telemetry heartbeat indicating active operational status of the Watchdog Agent.
+    
+    Attributes:
+        heartbeat_id: Unique UUID string for heartbeat tracking.
+        timestamp: ISO-8601 UTC timestamp of heartbeat emission.
+        event_type: Identifier for event ("heartbeat").
+        status: Current operational status of the agent (e.g., 'active', 'healthy', 'degraded').
+        pid: Process Identifier of the running agent.
+        uptime_seconds: Total elapsed running time in seconds.
+        events_processed: Total number of file telemetry events captured since start.
+        watch_dir: Canonical path string of the monitored target directory.
+        process_telemetry: Optional local process telemetry (CPU %, RAM %).
+        metadata: Extensible key-value store for additional system health context.
+    """
+    heartbeat_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    event_type: str = EventType.HEARTBEAT.value
+    status: str = "active"
+    pid: int = field(default_factory=os.getpid)
+    uptime_seconds: float = 0.0
+    events_processed: int = 0
+    watch_dir: str = ""
+    process_telemetry: Optional[ProcessTelemetry] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert HeartbeatData to a dictionary with serializable values."""
+        res = asdict(self)
+        if self.process_telemetry is not None:
+            res["process_telemetry"] = self.process_telemetry.to_dict()
+        return res
+
+    def to_json(self, indent: Optional[int] = None) -> str:
+        """Serialize HeartbeatData to a JSON string."""
+        return json.dumps(self.to_dict(), indent=indent)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> HeartbeatData:
+        """Reconstruct HeartbeatData instance from dictionary."""
+        proc_data = data.get("process_telemetry")
+        proc_obj = ProcessTelemetry.from_dict(proc_data) if proc_data else None
+
+        return cls(
+            heartbeat_id=data.get("heartbeat_id", str(uuid.uuid4())),
+            timestamp=data.get("timestamp", datetime.now(timezone.utc).isoformat()),
+            event_type=data.get("event_type", EventType.HEARTBEAT.value),
+            status=str(data.get("status", "active")),
+            pid=int(data.get("pid", os.getpid())),
+            uptime_seconds=float(data.get("uptime_seconds", 0.0)),
+            events_processed=int(data.get("events_processed", 0)),
+            watch_dir=str(data.get("watch_dir", "")),
+            process_telemetry=proc_obj,
+            metadata=data.get("metadata", {}),
+        )
+
+

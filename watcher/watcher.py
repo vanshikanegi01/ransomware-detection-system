@@ -24,8 +24,10 @@ _project_root = str(Path(__file__).resolve().parent.parent)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
+from watcher.canary_monitor import CanaryMonitor
 from watcher.file_monitor import FileMonitor
-from watcher.models import EventData, EventType, ProcessTelemetry
+from watcher.heartbeat import HeartbeatMonitor
+from watcher.models import EventData, EventType, HeartbeatData, ProcessTelemetry
 from watcher.process_monitor import ProcessMonitor
 
 # Configure structured logging
@@ -36,8 +38,8 @@ class WatchdogAgent:
     """
     Main Coordinator for Member 1: Windows Watchdog Agent.
     
-    Coordinates FileMonitor and ProcessMonitor to capture, enrich, and
-    dispatch structured defensive telemetry events.
+    Coordinates FileMonitor, ProcessMonitor, CanaryMonitor, and HeartbeatMonitor
+    to capture, enrich, and dispatch structured defensive telemetry events.
     """
 
     def __init__(
@@ -45,6 +47,12 @@ class WatchdogAgent:
         watch_dir: str | Path,
         recursive: bool = True,
         correlate_processes: bool = True,
+        enable_canary: bool = True,
+        canary_monitor: Optional[CanaryMonitor] = None,
+        enable_heartbeat: bool = True,
+        heartbeat_interval: float = 30.0,
+        heartbeat_monitor: Optional[HeartbeatMonitor] = None,
+        heartbeat_callbacks: Optional[List[Callable[[HeartbeatData], None]]] = None,
         max_event_history: int = 200,
         callbacks: Optional[List[Callable[[EventData], None]]] = None,
         log_json: bool = False,
@@ -56,6 +64,12 @@ class WatchdogAgent:
             watch_dir: Target directory path to monitor.
             recursive: Whether to monitor subdirectories recursively.
             correlate_processes: Whether to enrich events with top active process telemetry.
+            enable_canary: Whether to enable honeypot/canary decoy monitoring.
+            canary_monitor: Custom CanaryMonitor instance (or auto-created if enable_canary is True).
+            enable_heartbeat: Whether to enable periodic liveness heartbeats.
+            heartbeat_interval: Heartbeat emission interval in seconds (default: 30.0s).
+            heartbeat_monitor: Custom HeartbeatMonitor instance.
+            heartbeat_callbacks: Optional list of callbacks receiving `HeartbeatData`.
             max_event_history: Maximum number of recent events to store in memory.
             callbacks: Optional list of callback functions receiving `EventData`.
             log_json: If True, log events as single-line JSON strings.
@@ -66,6 +80,33 @@ class WatchdogAgent:
         self.log_json = log_json
 
         self.process_monitor = ProcessMonitor()
+        self._start_time: Optional[float] = None
+        self._events_processed_count: int = 0
+        
+        # Initialize Canary Monitor
+        if canary_monitor is not None:
+            self.canary_monitor = canary_monitor
+        elif enable_canary:
+            self.canary_monitor = CanaryMonitor(canary_dir=self.watch_dir)
+        else:
+            self.canary_monitor = None
+
+        # Initialize Heartbeat Monitor
+        self._heartbeat_callbacks: List[Callable[[HeartbeatData], None]] = list(heartbeat_callbacks or [])
+        if heartbeat_monitor is not None:
+            self.heartbeat_monitor = heartbeat_monitor
+            self.heartbeat_monitor.set_callback(self._handle_heartbeat)
+        elif enable_heartbeat:
+            self.heartbeat_monitor = HeartbeatMonitor(
+                interval=heartbeat_interval,
+                callback=self._handle_heartbeat,
+                get_status_fn=self._get_agent_status_metrics,
+                process_monitor=self.process_monitor,
+                watch_dir=self.watch_dir,
+            )
+        else:
+            self.heartbeat_monitor = None
+
         self._callbacks: List[Callable[[EventData], None]] = list(callbacks or [])
         self._event_history: Deque[EventData] = deque(maxlen=max_event_history)
 
@@ -90,11 +131,108 @@ class WatchdogAgent:
         if callback in self._callbacks:
             self._callbacks.remove(callback)
 
+    def add_heartbeat_callback(self, callback: Callable[[HeartbeatData], None]) -> None:
+        """
+        Register a subscriber callback for heartbeat telemetry events.
+
+        Args:
+            callback: Function accepting a `HeartbeatData` instance.
+        """
+        if callback not in self._heartbeat_callbacks:
+            self._heartbeat_callbacks.append(callback)
+
+    def remove_heartbeat_callback(self, callback: Callable[[HeartbeatData], None]) -> None:
+        """Unregister a heartbeat subscriber callback."""
+        if callback in self._heartbeat_callbacks:
+            self._heartbeat_callbacks.remove(callback)
+
+    def get_uptime(self) -> float:
+        """Return total elapsed running time in seconds."""
+        if self._start_time is None:
+            return 0.0
+        return max(0.0, time.time() - self._start_time)
+
+    def _get_agent_status_metrics(self) -> Dict[str, Any]:
+        """Internal status metric provider for HeartbeatMonitor."""
+        return {
+            "uptime_seconds": self.get_uptime(),
+            "events_processed": self._events_processed_count,
+            "status": "active" if self.is_alive() else "idle",
+            "metadata": {
+                "canary_enabled": self.canary_monitor is not None,
+                "recursive": self.recursive,
+            },
+        }
+
+    def emit_heartbeat(self) -> Optional[HeartbeatData]:
+        """
+        Emit a heartbeat event immediately on demand.
+
+        Returns:
+            HeartbeatData instance, or None if heartbeats are disabled.
+        """
+        if self.heartbeat_monitor:
+            return self.heartbeat_monitor.emit_heartbeat()
+        return None
+
+    def _handle_heartbeat(self, heartbeat: HeartbeatData) -> None:
+        """Internal handler for emitted heartbeat events."""
+        if self.log_json:
+            print(heartbeat.to_json())
+        else:
+            proc_info = ""
+            if heartbeat.process_telemetry:
+                proc_info = f" [PID: {heartbeat.pid} CPU: {heartbeat.process_telemetry.cpu_percent:.1f}% RAM: {heartbeat.process_telemetry.memory_percent:.1f}%]"
+            logger.info(
+                "[HEARTBEAT] Status: %s | Uptime: %.1fs | Events: %d%s",
+                heartbeat.status.upper(),
+                heartbeat.uptime_seconds,
+                heartbeat.events_processed,
+                proc_info,
+            )
+
+        for cb in self._heartbeat_callbacks:
+            try:
+                cb(heartbeat)
+            except Exception as e:
+                logger.error("Error in heartbeat subscriber callback: %s", e, exc_info=True)
+
+    def deploy_canaries(self, filenames: Optional[List[str]] = None) -> List[Path]:
+        """
+        Deploy inert canary decoy files in the monitored directory.
+
+        Args:
+            filenames: Optional list of filenames to deploy as canaries.
+
+        Returns:
+            List of Path objects for the deployed canary files.
+        """
+        if self.canary_monitor is None:
+            self.canary_monitor = CanaryMonitor(canary_dir=self.watch_dir)
+        return self.canary_monitor.deploy_canaries(target_dir=self.watch_dir, filenames=filenames)
+
+    def cleanup_canaries(self) -> int:
+        """
+        Remove deployed synthetic canary files from the monitored directory.
+
+        Returns:
+            Count of removed canary files.
+        """
+        if self.canary_monitor:
+            return self.canary_monitor.cleanup_canaries(target_dir=self.watch_dir)
+        return 0
+
     def _handle_file_event(self, event: EventData) -> None:
         """
         Internal handler invoked when FileMonitor detects an event.
         Enriches with defensive process telemetry and notifies subscribers.
         """
+        self._events_processed_count += 1
+
+        # Inspect and tag canary events
+        if self.canary_monitor is not None:
+            event = self.canary_monitor.inspect_and_tag_event(event)
+
         # Optionally correlate with active system process activity
         if self.correlate_processes and self.process_monitor.is_psutil_available:
             top_procs = self.process_monitor.get_top_active_processes(limit=1, sort_by="cpu")
@@ -114,14 +252,24 @@ class WatchdogAgent:
             dest_info = f" -> {event.dest_path}" if event.dest_path else ""
             size_info = f" ({event.file_size_bytes} bytes)" if event.file_size_bytes is not None else ""
             
-            logger.info(
-                "[%s] %s%s%s%s",
-                event.event_type.upper(),
-                event.file_path,
-                dest_info,
-                size_info,
-                proc_info,
-            )
+            if event.is_canary:
+                logger.warning(
+                    "[CANARY ALERT - HIGH SEVERITY] [%s] %s%s%s%s",
+                    event.event_type.upper(),
+                    event.file_path,
+                    dest_info,
+                    size_info,
+                    proc_info,
+                )
+            else:
+                logger.info(
+                    "[%s] %s%s%s%s",
+                    event.event_type.upper(),
+                    event.file_path,
+                    dest_info,
+                    size_info,
+                    proc_info,
+                )
 
         # Dispatch to all registered callbacks (e.g. RiskAnalyser / ML pipeline)
         for cb in self._callbacks:
@@ -146,18 +294,26 @@ class WatchdogAgent:
         return events
 
     def start(self) -> None:
-        """Start the watchdog monitoring agent."""
+        """Start the watchdog monitoring agent and heartbeat emitter."""
         if not self.watch_dir.exists():
             self.watch_dir.mkdir(parents=True, exist_ok=True)
             logger.info("Created target watch directory: %s", self.watch_dir)
 
+        self._start_time = time.time()
         logger.info("WatchdogAgent starting on: %s", self.watch_dir)
         self.file_monitor.start()
-        logger.info("WatchdogAgent active. Monitoring file operations.")
+
+        if self.heartbeat_monitor is not None:
+            self.heartbeat_monitor.start()
+
+        logger.info("WatchdogAgent active. Monitoring file operations and emitting heartbeats.")
 
     def stop(self) -> None:
-        """Stop the watchdog monitoring agent."""
+        """Stop the watchdog monitoring agent and heartbeat emitter."""
         logger.info("Stopping WatchdogAgent...")
+        if self.heartbeat_monitor is not None:
+            self.heartbeat_monitor.stop()
+
         self.file_monitor.stop()
         logger.info("WatchdogAgent stopped.")
 
