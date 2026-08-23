@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
-from policy_engine.models import BehavioralSignal
+from .models import BehavioralSignal
 
 BASE_DIR = Path(__file__).parent.parent
 SANDBOX_DIR = BASE_DIR / "sandbox_data" / "test_target"

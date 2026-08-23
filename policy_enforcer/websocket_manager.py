@@ -1,43 +1,73 @@
 """
-Manages active WebSocket connections and broadcasts events to all
-connected dashboard clients in real time.
+Manages active WebSocket connections with strict application-level authentication.
+Broadcasts telemetry events ONLY to authenticated clients.
 """
 from __future__ import annotations
 
 import asyncio
 import json
-from typing import List
+import logging
+from typing import Dict, Set, Optional, Any
 
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
+
+logger = logging.getLogger("trinetra.websocket")
 
 
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: List[WebSocket] = []
+        # Maps WebSocket connection to its authenticated user data dict
+        self._authenticated_clients: Dict[WebSocket, Dict[str, Any]] = {}
+        # Set of connections that have connected but not yet authenticated
+        self._pending_connections: Set[WebSocket] = set()
         self._lock = asyncio.Lock()
 
-    async def connect(self, websocket: WebSocket) -> None:
-        await websocket.accept()
+    async def register_pending(self, websocket: WebSocket) -> None:
+        """Register a newly accepted connection into pending unauthenticated pool."""
         async with self._lock:
-            self.active_connections.append(websocket)
+            self._pending_connections.add(websocket)
+
+    async def mark_authenticated(self, websocket: WebSocket, user_data: Dict[str, Any]) -> None:
+        """Promote a connection from pending to authenticated pool."""
+        async with self._lock:
+            if websocket in self._pending_connections:
+                self._pending_connections.remove(websocket)
+            self._authenticated_clients[websocket] = user_data
+        logger.info("WebSocket connection authenticated for user: %s", user_data.get("sub", "unknown"))
+
+    def is_authenticated(self, websocket: WebSocket) -> bool:
+        return websocket in self._authenticated_clients
 
     async def disconnect(self, websocket: WebSocket) -> None:
+        """Remove connection from all pools upon disconnect."""
         async with self._lock:
-            if websocket in self.active_connections:
-                self.active_connections.remove(websocket)
+            if websocket in self._pending_connections:
+                self._pending_connections.remove(websocket)
+            if websocket in self._authenticated_clients:
+                del self._authenticated_clients[websocket]
 
     async def broadcast(self, message: dict) -> None:
+        """
+        Broadcasts telemetry event ONLY to authenticated connections.
+        Stale/broken connections are cleaned up safely.
+        """
         payload = json.dumps(message)
         stale = []
+
         async with self._lock:
-            connections = list(self.active_connections)
-        for connection in connections:
+            recipients = list(self._authenticated_clients.keys())
+
+        for connection in recipients:
             try:
                 await connection.send_text(payload)
-            except Exception:
+            except Exception as e:
+                logger.debug("Failed sending WebSocket message to client: %s", e)
                 stale.append(connection)
+
         if stale:
             async with self._lock:
                 for c in stale:
-                    if c in self.active_connections:
-                        self.active_connections.remove(c)
+                    if c in self._authenticated_clients:
+                        del self._authenticated_clients[c]
+                    if c in self._pending_connections:
+                        self._pending_connections.remove(c)

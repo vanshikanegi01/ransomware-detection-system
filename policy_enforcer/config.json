@@ -1,6 +1,6 @@
 {
   "thresholds": {
-    "safe_max": 29,
+    "safe_max": 28,
     "suspicious_max": 43,
     "high_risk_max": 69,
     "ransomware_threshold": 44

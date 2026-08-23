@@ -15,6 +15,8 @@ versioned backup store.
 """
 from __future__ import annotations
 
+import os
+import stat
 import hashlib
 import shutil
 from pathlib import Path
@@ -64,15 +66,27 @@ class Vaultkeeper:
                 if dest is None:
                     continue
                 dest.parent.mkdir(parents=True, exist_ok=True)
+                if dest.exists():
+                    try:
+                        os.chmod(dest, stat.S_IWRITE)
+                    except Exception:
+                        pass
                 shutil.copy2(f, dest)
                 backed_up.append(str(f))
 
         return {"snapshotted": backed_up, "count": len(backed_up)}
 
-    def recover(self, affected_paths: List[str],
-                event_sink: Optional[Callable[[dict], None]] = None) -> dict:
-        emit = event_sink or (lambda e: None)
+    def recover(self, *args, **kwargs) -> dict:
+        event_sink = kwargs.get("event_sink")
+        affected_paths = []
+        if len(args) == 1:
+            affected_paths = args[0] if isinstance(args[0], list) else []
+        elif len(args) >= 2:
+            affected_paths = args[1] if isinstance(args[1], list) else []
+        elif "affected_paths" in kwargs:
+            affected_paths = kwargs["affected_paths"]
 
+        emit = event_sink or (lambda e: None)
         emit({"event": "VAULTKEEPER_SEARCHING_CLEAN_VERSIONS", "paths": affected_paths})
 
         restored = []
@@ -95,6 +109,11 @@ class Vaultkeeper:
                 verified.append({"path": str(f), "backup_hash": backup_hash})
 
                 try:
+                    if f.exists():
+                        try:
+                            os.chmod(f, stat.S_IWRITE)
+                        except Exception:
+                            pass
                     shutil.copy2(backup, f)
                     restored.append(str(f))
                 except Exception as e:

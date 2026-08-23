@@ -1,0 +1,31 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Database files
+db/*.db
+*.sqlite
+*.sqlite3
+
+# Logs and temporary sandboxes
+logs/
+*.log
+disposable_test_sandbox/
+trinetra_sandbox_*/
+
+# Test/cache artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local simulation/demo data
+backups/
+sandbox_data/
