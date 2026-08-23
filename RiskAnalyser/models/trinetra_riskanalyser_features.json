@@ -1,0 +1,60 @@
+{
+    "model_name": "TRINETRA Risk Analyser",
+    "model_version": "v1",
+    "model_type": "RandomForestClassifier",
+    "features": [
+        "total_operations",
+        "total_bytes",
+        "total_operation_velocity",
+        "total_unique_addresses",
+        "ata_read_operations",
+        "ata_write_operations",
+        "ata_read_bytes",
+        "ata_write_bytes",
+        "ata_read_velocity",
+        "ata_write_velocity",
+        "mem_read_operations",
+        "mem_write_operations",
+        "mem_readwrite_operations",
+        "mem_exec_operations",
+        "mem_read_velocity",
+        "mem_write_velocity",
+        "mem_readwrite_velocity",
+        "mem_exec_velocity",
+        "ata_write_entropy_mean",
+        "ata_write_entropy_std",
+        "ata_write_entropy_max",
+        "mem_write_entropy_mean",
+        "mem_write_entropy_std",
+        "mem_write_entropy_max",
+        "mem_readwrite_entropy_mean",
+        "mem_readwrite_entropy_std",
+        "mem_readwrite_entropy_max"
+    ],
+    "feature_count": 27,
+    "risk_score": "ransomware_probability * 100",
+    "operational_threshold": 44,
+    "threshold_rule": "risk_score >= 44",
+    "validation_probability_threshold": 0.22999999999999995,
+    "source_dataset": "RanSMAP 2024",
+    "training_groups": [
+        "original",
+        "variants",
+        "mix"
+    ],
+    "excluded_from_training": [
+        "extra"
+    ],
+    "training_samples": 1610,
+    "training_benign": 600,
+    "training_ransomware": 1010,
+    "telemetry_sources": [
+        "ATA read",
+        "ATA write",
+        "memory read",
+        "memory write",
+        "memory read/write",
+        "memory execute"
+    ],
+    "note": "Prototype ransomware behavioral model trained on aggregated RanSMAP telemetry. Runtime RiskAnalyser must receive the same feature schema for valid inference."
+}
