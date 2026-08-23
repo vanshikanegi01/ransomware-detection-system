@@ -21,7 +21,15 @@ class BehavioralSignal(BaseModel):
     network_activity: Optional[bool] = False
     suspicious_behavior: Optional[bool] = False
     affected_paths: Optional[List[str]] = Field(default_factory=list)
-
+    
+    # Extended context passed through from RiskAnalyser -> PolicyEngine
+    event_id: Optional[str] = None
+    timestamp: Optional[str] = None
+    threshold_met: Optional[bool] = None
+    ransomware_probability: Optional[float] = None
+    gatekeeper_context: Optional[dict] = Field(default_factory=dict)
+    watchdog_context: Optional[dict] = Field(default_factory=dict)
+    features: Optional[List[float]] = Field(default_factory=list)
 
 class PolicyDecisionResponse(BaseModel):
     decision: str

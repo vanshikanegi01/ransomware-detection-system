@@ -79,6 +79,39 @@ class SafeRansomwareSimulator:
                 f"({cls.SAFE_DIR_MARKERS}). To protect user data, simulation is aborted."
             )
 
+    def _emit_telemetry(self, data: bytes, op_types: List[str]) -> None:
+        """Faithfully emit model-compatible behavioral telemetry based on actual payload."""
+        try:
+            from watcher.hardware_telemetry import global_telemetry_collector, BehavioralTelemetryEvent, calculate_shannon_entropy
+        except ImportError:
+            return
+
+        import math
+        now = time.time()
+        size = len(data)
+        if size == 0:
+            return
+        ops = max(1, math.ceil(size / 4096))
+
+        entropies = []
+        for i in range(0, size, 4096):
+            chunk = data[i:i+4096]
+            entropies.append(calculate_shannon_entropy(chunk))
+
+        # Deterministic dummy address
+        addr = abs(hash(data[:64])) % 1000000
+        addresses = [addr + i for i in range(ops)]
+
+        for op in op_types:
+            global_telemetry_collector.add_event(BehavioralTelemetryEvent(
+                timestamp=now,
+                op_type=op,
+                bytes_count=size,
+                ops_count=ops,
+                entropies=entropies,
+                addresses=addresses
+            ))
+
     def create_dummy_workload(self, count: int = 10) -> List[Path]:
         """Create a set of dummy business documents with known initial content.
 
@@ -101,7 +134,9 @@ class SafeRansomwareSimulator:
                 f"Initial State Checksum Anchor: {i * 1000}\n"
                 f"Timestamp: {datetime.now(timezone.utc).isoformat()}\n"
             )
-            file_path.write_text(content, encoding="utf-8")
+            b_content = content.encode("utf-8")
+            self._emit_telemetry(b_content, ["ata_write", "mem_write"])
+            file_path.write_bytes(b_content)
             created_files.append(file_path)
 
         return created_files
@@ -120,8 +155,13 @@ class SafeRansomwareSimulator:
         for p in file_paths:
             self._validate_safety(p)
             if p.is_file():
-                current_text = p.read_text(encoding="utf-8")
-                p.write_text(current_text + append_text, encoding="utf-8")
+                current_bytes = p.read_bytes()
+                self._emit_telemetry(current_bytes, ["ata_read", "mem_read"])
+                
+                b_append = append_text.encode("utf-8")
+                self._emit_telemetry(b_append, ["ata_write", "mem_write"])
+                
+                p.write_bytes(current_bytes + b_append)
                 modified.append(p)
         return modified
 
@@ -146,6 +186,17 @@ class SafeRansomwareSimulator:
                     b"YOUR FILES HAVE BEEN SIMULATED AS ENCRYPTED FOR TRINETRA DEMO.\n"
                     + os.urandom(256)
                 )
+                
+                # Attack operations involve reading original file, generating encryption in mem, writing encrypted data
+                try:
+                    orig_bytes = p.read_bytes()
+                    self._emit_telemetry(orig_bytes, ["ata_read", "mem_read"])
+                except Exception:
+                    pass
+                
+                # Simulating the behavior of encryption routines
+                self._emit_telemetry(simulated_locked_content, ["mem_readwrite", "mem_exec", "ata_write"])
+                
                 p.write_bytes(simulated_locked_content)
                 damaged.append(p)
         return damaged

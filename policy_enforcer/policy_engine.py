@@ -165,7 +165,7 @@ class PolicyEngine:
             self._emit({"event": "VAULTKEEPER_NOTIFIED", "pid": sig.process_id,
                          "affected_paths": affected_paths})
             recovery_result = self.vaultkeeper.recover(
-                affected_paths, event_sink=self._emit
+                sig, affected_paths, event_sink=self._emit
             )
             result["recovery"] = recovery_result
 
