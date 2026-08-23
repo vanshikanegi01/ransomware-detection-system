@@ -115,6 +115,15 @@ class WatchdogAgent:
             callback=self._handle_file_event,
             recursive=self.recursive,
         )
+        self._screening_context: Dict[str, Any] = {}
+
+    def register_screening_result(self, result: Any) -> None:
+        """
+        Register a Gatekeeper ScreeningResult to provide context for future file events.
+        """
+        # Store by normalized absolute path for reliable matching
+        norm_path = os.path.abspath(result.target).lower()
+        self._screening_context[norm_path] = result
 
     def add_callback(self, callback: Callable[[EventData], None]) -> None:
         """
@@ -238,6 +247,16 @@ class WatchdogAgent:
             top_procs = self.process_monitor.get_top_active_processes(limit=1, sort_by="cpu")
             if top_procs:
                 event.process_telemetry = top_procs[0]
+
+        # Enrich with Gatekeeper screening context if available
+        norm_path = event.file_path.lower()
+        if norm_path in self._screening_context:
+            screening_result = self._screening_context[norm_path]
+            event.metadata["gatekeeper_screening"] = screening_result.to_dict()
+            
+            # If Gatekeeper flagged this as suspicious, escalate Watchdog event severity
+            if screening_result.is_suspicious:
+                event.severity = "high"
 
         # Record in history buffer
         self._event_history.append(event)
