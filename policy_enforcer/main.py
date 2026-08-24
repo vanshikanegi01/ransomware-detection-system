@@ -69,19 +69,22 @@ def event_sink(event: dict) -> None:
     """
     database.insert_event(event)
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(manager.broadcast(event))
-    except RuntimeError:
-        pass
+        if _main_loop and _main_loop.is_running():
+            asyncio.run_coroutine_threadsafe(manager.broadcast(event), _main_loop)
+    except Exception as e:
+        logger.error(f'Broadcast failed: {e}')
 
 
 policy_engine = PolicyEngine(event_sink=event_sink, enforcer=enforcer, vaultkeeper=vaultkeeper)
 simulator = RansomwareSimulator(policy_engine, vaultkeeper, event_sink=event_sink)
 
 
+_main_loop = None
+
 @app.on_event("startup")
 async def startup():
+    global _main_loop
+    _main_loop = asyncio.get_running_loop()
     # 1. Initialize database tables idempotently
     database.init_db()
     # 2. Seed initial administrator if users table is empty (fails fast if TRINETRA_ADMIN_PASSWORD is unset)
